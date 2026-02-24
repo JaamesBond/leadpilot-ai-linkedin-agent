@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LeadPilot AI</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <rect width="24" height="24" rx="6" fill="#0F172A"/>
+          <path d="M7 17V10h2v7H7zm1-8.5a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5zM12 17v-4c0-1 .5-1.5 1.3-1.5s1.2.5 1.2 1.5v4h2v-4.5c0-2-1-3-2.5-3-.9 0-1.6.4-2 1v-.8h-2V17h2z" fill="#38BDF8"/>
+        </svg>
+        <span class="logo-text">LeadPilot <span class="logo-accent">AI</span></span>
+      </div>
+      <div class="header-actions">
+        <button id="btn-settings" class="icon-btn" title="Settings">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.09a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Tab Navigation -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="campaigns">Campaigns</button>
+      <button class="tab" data-tab="leads">Leads</button>
+      <button class="tab" data-tab="conversations">Conversations</button>
+    </nav>
+
+    <!-- ========== CAMPAIGNS TAB ========== -->
+    <section id="tab-campaigns" class="tab-content active">
+      <div class="section-header">
+        <h2>Active Campaigns</h2>
+        <button id="btn-new-campaign" class="btn btn-primary btn-sm">+ New</button>
+      </div>
+
+      <div id="campaign-list" class="card-list">
+        <div class="empty-state">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+          <p>No campaigns yet</p>
+          <span>Create your first outreach campaign</span>
+        </div>
+      </div>
+
+      <!-- New Campaign Form (hidden by default) -->
+      <div id="campaign-form" class="form-panel hidden">
+        <h3>New Campaign</h3>
+        <div class="form-group">
+          <label for="campaign-name">Campaign Name</label>
+          <input type="text" id="campaign-name" placeholder="e.g. Q1 SaaS Outreach">
+        </div>
+        <div class="form-group">
+          <label for="initial-template">Opening Message</label>
+          <textarea id="initial-template" rows="4" placeholder="Hi {{firstName}}, I came across your profile and thought it'd be worth connecting. I work with {{company}}-sized teams on [your topic] — would love to hear how you're currently handling it. Open to a quick chat?"></textarea>
+          <div class="hint">Variables: {{firstName}}, {{lastName}}, {{company}}, {{title}}. Keep it short and genuine.</div>
+        </div>
+
+        <div class="form-divider">Your Business (required)</div>
+
+        <div class="form-group">
+          <label for="rep-name">Your Name (Sales Rep)</label>
+          <input type="text" id="rep-name" placeholder="e.g. Andrei">
+          <div class="hint">The first name the AI will use when referring to itself. Required — prevents the AI from using unfilled placeholders.</div>
+        </div>
+
+        <div class="form-group">
+          <label for="agent-persona">Describe Your Business</label>
+          <textarea id="agent-persona" rows="5" placeholder="We are [Company Name], a [type of business] that helps [target customers] with [core problem you solve]. Our main product/service is [what you offer]. Key benefits: [list 2-3 concrete benefits]. We typically work with [company size / industry / role]. Our pricing starts at [range] and a typical engagement looks like [description]."></textarea>
+          <div class="hint">This is the most important field. Describe what you sell, who it's for, what problems it solves, and key benefits. The AI will use ONLY this information — it will never make things up.</div>
+        </div>
+
+        <div class="form-divider">Conversation Strategy (optional — smart defaults apply)</div>
+
+        <div class="form-group">
+          <label for="qualification-criteria">Qualification Criteria</label>
+          <textarea id="qualification-criteria" rows="2" placeholder="Leave blank for smart defaults. Or specify: budget range, decision-maker role, company size, timeline, etc."></textarea>
+          <div class="hint">Default: qualifies based on genuine interest + relevant need + authority to act + reasonable timeline</div>
+        </div>
+        <div class="form-group">
+          <label for="call-scheduling">Call Booking</label>
+          <textarea id="call-scheduling" rows="2" placeholder="Leave blank for default call-booking flow. Or add your Calendly/Cal link and preferred call format."></textarea>
+          <div class="hint">Default: once qualified, proposes a short intro call to explore fit. Add a scheduling link for best results.</div>
+        </div>
+        <div class="form-group">
+          <label for="upsell-triggers">Upsell / Cross-sell Triggers</label>
+          <textarea id="upsell-triggers" rows="2" placeholder="Optional. E.g.: If they mention [signal], introduce [offering]."></textarea>
+          <div class="hint">Leave blank if you don't have multiple tiers or products</div>
+        </div>
+        <div class="form-group">
+          <label for="insight-goals">Info to Gather</label>
+          <textarea id="insight-goals" rows="2" placeholder="Leave blank for smart defaults. Or list specific things to learn: budget, current tools, team size, etc."></textarea>
+          <div class="hint">Default: learns about their current situation, pain points, team size, timeline, and decision process</div>
+        </div>
+        <div class="form-group">
+          <label for="abandon-rules">Exit Rules</label>
+          <textarea id="abandon-rules" rows="2" placeholder="Leave blank for smart defaults. Or specify custom exit conditions."></textarea>
+          <div class="hint">Default: exits gracefully if they decline, are clearly not a fit, or ask to stop</div>
+        </div>
+
+        <div class="form-divider">Follow-up Settings</div>
+
+        <div class="form-group">
+          <div class="inline-fields">
+            <div>
+              <label for="followup-delay" class="sub-label">Delay (hours)</label>
+              <input type="number" id="followup-delay" value="24" min="1" max="168">
+            </div>
+            <div>
+              <label for="max-followups" class="sub-label">Max follow-ups</label>
+              <input type="number" id="max-followups" value="3" min="1" max="10">
+            </div>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="btn-cancel-campaign" class="btn btn-ghost">Cancel</button>
+          <button id="btn-save-campaign" class="btn btn-primary">Create Campaign</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== LEADS TAB ========== -->
+    <section id="tab-leads" class="tab-content">
+      <div class="section-header">
+        <h2>Lead Queue</h2>
+        <button id="btn-add-leads" class="btn btn-primary btn-sm">+ Add Leads</button>
+      </div>
+
+      <div id="lead-import-panel" class="form-panel hidden">
+        <h3>Import Leads</h3>
+        <div class="form-group">
+          <label for="campaign-select">Assign to Campaign</label>
+          <select id="campaign-select"></select>
+        </div>
+        <div class="form-group">
+          <label for="lead-names">LinkedIn Profile URLs or Names</label>
+          <textarea id="lead-names" rows="6" placeholder="Paste LinkedIn URLs (one per line):
+https://linkedin.com/in/johndoe
+https://linkedin.com/in/janedoe
+
+Or paste names (one per line):
+John Doe, Company Inc, CTO
+Jane Doe, Startup Co, VP Sales"></textarea>
+          <div class="hint">One entry per line. For names, use format: Name, Company, Title</div>
+        </div>
+        <div class="form-actions">
+          <button id="btn-cancel-leads" class="btn btn-ghost">Cancel</button>
+          <button id="btn-import-leads" class="btn btn-primary">Import Leads</button>
+        </div>
+      </div>
+
+      <div id="lead-list" class="card-list">
+        <div class="empty-state">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+          <p>No leads added</p>
+          <span>Import leads to start outreach</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== CONVERSATIONS TAB ========== -->
+    <section id="tab-conversations" class="tab-content">
+      <div class="section-header">
+        <h2>Active Conversations</h2>
+        <div class="filter-bar">
+          <select id="conv-filter">
+            <option value="all">All</option>
+            <option value="awaiting_reply">Awaiting Reply</option>
+            <option value="replied">Replied</option>
+            <option value="qualified">Qualified</option>
+            <option value="call_booked">Call Booked</option>
+            <option value="abandoned">Exited</option>
+            <option value="disqualified">Not Qualified</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="conversation-list" class="card-list">
+        <div class="empty-state">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg>
+          <p>No conversations yet</p>
+          <span>Start a campaign to begin messaging</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== SETTINGS PANEL ========== -->
+    <section id="panel-settings" class="panel hidden">
+      <div class="panel-header">
+        <button id="btn-back-settings" class="icon-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h2>Settings</h2>
+      </div>
+
+      <div class="form-group">
+        <label for="api-key">Anthropic API Key</label>
+        <input type="password" id="api-key" placeholder="sk-ant-...">
+        <div class="hint">Your key is stored locally and never sent to third parties</div>
+      </div>
+
+      <div class="form-group">
+        <label for="model-select">Model</label>
+        <select id="model-select">
+          <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (Recommended)</option>
+          <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Faster)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="brand-name">White-label Brand Name</label>
+        <input type="text" id="brand-name" placeholder="LeadPilot AI">
+        <div class="hint">Your brand name shown in the UI</div>
+      </div>
+
+      <div class="form-group">
+        <label for="brand-color">Brand Accent Color</label>
+        <input type="color" id="brand-color" value="#38BDF8">
+      </div>
+
+      <div class="form-group">
+        <label>Safety Settings</label>
+        <div class="toggle-row">
+          <span>Human review before sending</span>
+          <label class="toggle">
+            <input type="checkbox" id="human-review" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="toggle-row">
+          <span>Random delay between messages (30s-5min)</span>
+          <label class="toggle">
+            <input type="checkbox" id="random-delay" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="toggle-row">
+          <span>Daily message limit</span>
+          <label class="toggle">
+            <input type="checkbox" id="daily-limit-toggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <input type="number" id="daily-limit" value="25" min="1" max="100" class="small-input">
+      </div>
+
+      <div class="form-actions">
+        <button id="btn-save-settings" class="btn btn-primary">Save Settings</button>
+      </div>
+    </section>
+
+    <!-- Running status bar -->
+    <footer id="status-bar" class="status-bar hidden">
+      <div class="status-indicator">
+        <span class="pulse"></span>
+        <span id="status-text">Idle</span>
+      </div>
+      <button id="btn-run-campaign" class="btn btn-accent btn-sm">▶ Run</button>
+      <button id="btn-stop-campaign" class="btn btn-danger btn-sm hidden">⏹ Stop</button>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
