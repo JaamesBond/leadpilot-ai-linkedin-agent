@@ -1,3 +1,6 @@
+import { login, getSession, logout, getAuthHeaders } from './auth.js';
+import { AIVORA_CONFIG } from './config.js';
+
 // ============================================================
 // LeadPilot AI — Popup Controller
 // ============================================================
@@ -27,6 +30,9 @@ let state = {
   running: false,
   pendingApprovals: [],
 };
+
+let dashboardLeads = [];
+let dashboardSelectedIds = new Set();
 
 // ---- Persistence ----
 async function loadState() {
@@ -65,6 +71,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (state.pendingApprovals && state.pendingApprovals.length > 0) {
     showApprovalModal(state.pendingApprovals[0]);
   }
+
+  // Check Aivora auth state
+  await checkAivoraAuth();
 });
 
 // ---- Branding ----
@@ -89,6 +98,7 @@ function bindEvents() {
 
   // Campaign form
   $('#btn-new-campaign').addEventListener('click', () => {
+    if (!requireApiKey()) return;
     $('#campaign-form').classList.remove('hidden');
   });
   $('#btn-cancel-campaign').addEventListener('click', () => {
@@ -99,6 +109,7 @@ function bindEvents() {
 
   // Leads
   $('#btn-add-leads').addEventListener('click', () => {
+    if (!requireApiKey()) return;
     populateCampaignSelect();
     $('#lead-import-panel').classList.remove('hidden');
   });
@@ -118,6 +129,31 @@ function bindEvents() {
 
   // Conv filter
   $('#conv-filter').addEventListener('change', renderConversations);
+
+  // Aivora auth & dashboard
+  const aivoraLoginBtn = $('#btn-aivora-login');
+  if (aivoraLoginBtn) aivoraLoginBtn.addEventListener('click', () => {
+    $$('.tab').forEach(t => t.classList.remove('active'));
+    $$('.tab-content').forEach(tc => tc.classList.remove('active'));
+    const dashTab = $('#tab-btn-dashboard');
+    if (dashTab) { dashTab.style.display = ''; dashTab.classList.add('active'); }
+    const dashContent = $('#tab-dashboard');
+    if (dashContent) dashContent.classList.add('active');
+  });
+  const aivoraLogoutBtn = $('#btn-aivora-logout');
+  if (aivoraLogoutBtn) aivoraLogoutBtn.addEventListener('click', aivoraLogout);
+  const signinBtn = $('#btn-aivora-signin');
+  if (signinBtn) signinBtn.addEventListener('click', aivoraSignIn);
+  const refreshDashBtn = $('#btn-refresh-dashboard');
+  if (refreshDashBtn) refreshDashBtn.addEventListener('click', fetchDashboardLeads);
+  const stageFilter = $('#dashboard-stage-filter');
+  if (stageFilter) stageFilter.addEventListener('change', fetchDashboardLeads);
+  const dashImportBtn = $('#btn-dashboard-import');
+  if (dashImportBtn) dashImportBtn.addEventListener('click', importDashboardLeads);
+  const loginEmail = $('#aivora-login-email');
+  if (loginEmail) loginEmail.addEventListener('keydown', (e) => { if (e.key === 'Enter') aivoraSignIn(); });
+  const loginPassword = $('#aivora-login-password');
+  if (loginPassword) loginPassword.addEventListener('keydown', (e) => { if (e.key === 'Enter') aivoraSignIn(); });
 }
 
 // ---- Campaigns ----
@@ -129,7 +165,7 @@ function saveCampaign() {
   const criteria = $('#qualification-criteria').value.trim();
 
   if (!repName) {
-    alert('Please enter your name (the sales representative name). The AI needs this to identify itself correctly.');
+    showToast('Please enter your name — the AI needs it to identify itself');
     return;
   }
   const callScheduling = $('#call-scheduling').value.trim();
@@ -140,7 +176,7 @@ function saveCampaign() {
   const maxFollowups = parseInt($('#max-followups').value) || 3;
 
   if (!name || !template) {
-    alert('Campaign name and initial template are required.');
+    showToast('Campaign name and opening message are required');
     return;
   }
 
@@ -268,7 +304,7 @@ function importLeads() {
   const campaignId = $('#campaign-select').value;
   const raw = $('#lead-names').value.trim();
   if (!campaignId || !raw) {
-    alert('Select a campaign and enter leads.');
+    showToast('Select a campaign and enter leads');
     return;
   }
 
@@ -276,12 +312,11 @@ function importLeads() {
   const totalAfterImport = state.leads.length + lines.length;
 
   if (totalAfterImport > LEAD_HARD_CAP) {
-    alert(`Import blocked: would reach ${totalAfterImport} leads (max ${LEAD_HARD_CAP}). Delete completed leads first.`);
+    showToast(`Import blocked: would reach ${totalAfterImport} leads (max ${LEAD_HARD_CAP})`);
     return;
   }
   if (totalAfterImport > LEAD_SOFT_CAP) {
-    const ok = confirm(`Warning: ${totalAfterImport} leads will slow reply detection (overlay shows ~15 at a time). Continue?`);
-    if (!ok) return;
+    showToast(`Warning: ${totalAfterImport} leads may slow reply detection`, 'warning');
   }
 
   const newLeads = lines.map(line => {
@@ -513,10 +548,7 @@ function saveSettings() {
 
 // ---- Campaign Runner ----
 function startCampaign() {
-  if (!state.settings.apiKey) {
-    alert('Please set your Anthropic API key in Settings first.');
-    return;
-  }
+  if (!requireApiKey()) return;
   state.running = true;
   saveState();
   chrome.runtime.sendMessage({ action: 'start_campaign' });
@@ -556,9 +588,27 @@ function updateStatusBar() {
 
 // ---- Render All ----
 function renderAll() {
+  renderSetupBanner();
   renderCampaigns();
   renderLeads();
   renderConversations();
+}
+
+function renderSetupBanner() {
+  let banner = document.getElementById('setup-banner');
+  if (state.settings.apiKey) {
+    if (banner) banner.remove();
+    return;
+  }
+  if (banner) return; // already shown
+  banner = document.createElement('div');
+  banner.id = 'setup-banner';
+  banner.className = 'setup-banner';
+  // innerHTML is static content, no user data
+  banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> Set up your API key to get started';
+  banner.addEventListener('click', openSettings);
+  const tabs = document.querySelector('.tabs');
+  if (tabs) tabs.after(banner);
 }
 
 // ---- Helpers ----
@@ -566,6 +616,26 @@ function esc(str) {
   const div = document.createElement('div');
   div.textContent = str || '';
   return div.innerHTML;
+}
+
+// Non-blocking toast notification (replaces alert/confirm which freeze Chrome extension popups)
+let _toastTimer = null;
+function showToast(msg, type = 'error', duration = 4000) {
+  const toast = document.getElementById('toast-message');
+  if (!toast) return;
+  toast.textContent = msg;
+  toast.className = `toast toast-${type}`;
+  void toast.offsetWidth; // force reflow for re-trigger
+  toast.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => toast.classList.remove('show'), duration);
+}
+
+function requireApiKey() {
+  if (state.settings.apiKey) return true;
+  showToast('Set your Anthropic API key in Settings first', 'warning');
+  openSettings();
+  return false;
 }
 
 function timeAgo(ts) {
@@ -577,6 +647,227 @@ function timeAgo(ts) {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
+}
+
+// ---- Aivora Auth & Dashboard ----
+async function checkAivoraAuth() {
+  const session = await getSession();
+  const loginBtn = $('#btn-aivora-login');
+  const userDiv = $('#aivora-user');
+  const emailSpan = $('#aivora-email');
+  const dashboardTab = $('#tab-btn-dashboard');
+  const dashboardLogin = $('#dashboard-login');
+  const dashboardLeadsDiv = $('#dashboard-leads');
+
+  if (session && session.user) {
+    if (loginBtn) loginBtn.classList.add('hidden');
+    if (userDiv) userDiv.classList.remove('hidden');
+    if (emailSpan) emailSpan.textContent = session.user.email || 'Connected';
+    if (dashboardTab) dashboardTab.style.display = '';
+    if (dashboardLogin) dashboardLogin.classList.add('hidden');
+    if (dashboardLeadsDiv) dashboardLeadsDiv.classList.remove('hidden');
+    fetchDashboardLeads();
+  } else {
+    if (loginBtn) loginBtn.classList.remove('hidden');
+    if (userDiv) userDiv.classList.add('hidden');
+    if (dashboardTab) dashboardTab.style.display = 'none';
+    if (dashboardLogin) dashboardLogin.classList.remove('hidden');
+    if (dashboardLeadsDiv) dashboardLeadsDiv.classList.add('hidden');
+  }
+}
+
+async function aivoraSignIn() {
+  const email = $('#aivora-login-email')?.value?.trim();
+  const password = $('#aivora-login-password')?.value;
+  const errorDiv = $('#aivora-login-error');
+
+  if (!email || !password) {
+    if (errorDiv) { errorDiv.textContent = 'Email and password are required'; errorDiv.classList.remove('hidden'); }
+    return;
+  }
+
+  const btn = $('#btn-aivora-signin');
+  if (btn) { btn.disabled = true; btn.textContent = 'Signing in...'; }
+  if (errorDiv) errorDiv.classList.add('hidden');
+
+  try {
+    await login(email, password);
+    await checkAivoraAuth();
+  } catch (err) {
+    if (errorDiv) { errorDiv.textContent = err.message || 'Login failed'; errorDiv.classList.remove('hidden'); }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign In'; }
+  }
+}
+
+async function aivoraLogout() {
+  await logout();
+  dashboardLeads = [];
+  dashboardSelectedIds.clear();
+  await checkAivoraAuth();
+  $$('.tab').forEach(t => t.classList.remove('active'));
+  $$('.tab-content').forEach(tc => tc.classList.remove('active'));
+  $$('.tab')[0]?.classList.add('active');
+  $('#tab-campaigns')?.classList.add('active');
+}
+
+async function fetchDashboardLeads() {
+  const headers = await getAuthHeaders();
+  if (!headers) return;
+
+  const stageFilter = $('#dashboard-stage-filter')?.value || '';
+  const params = new URLSearchParams({ limit: '50' });
+  if (stageFilter) params.set('pipelineStage', stageFilter);
+
+  const list = $('#dashboard-lead-list');
+  // Note: innerHTML usage here is safe — all dynamic values are escaped via esc()
+  if (list) list.innerHTML = '<div class="empty-state"><span class="enriching-spinner"></span><p style="margin-top:8px">Loading leads...</p></div>';
+
+  try {
+    const res = await fetch(`${AIVORA_CONFIG.BACKEND_URL}/api/content/linkedin-leads?${params}`, {
+      headers: { ...headers, 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const result = await res.json();
+    dashboardLeads = result.data || [];
+    dashboardSelectedIds.clear();
+    renderDashboardLeads();
+  } catch (err) {
+    if (list) list.innerHTML = `<div class="empty-state"><p>Failed to load leads</p><span>${esc(err.message)}</span></div>`;
+  }
+}
+
+function renderDashboardLeads() {
+  const list = $('#dashboard-lead-list');
+  if (!list) return;
+
+  if (dashboardLeads.length === 0) {
+    list.innerHTML = `
+      <div class="empty-state">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+        <p>No leads found</p>
+        <span>Try a different filter or generate leads in the Aivora dashboard</span>
+      </div>`;
+    updateDashboardImportBar();
+    return;
+  }
+
+  // All dynamic values passed through esc() to prevent XSS
+  list.innerHTML = dashboardLeads.map(l => {
+    const initials = ((l.first_name?.[0] || '') + (l.last_name?.[0] || '')).toUpperCase() || '?';
+    const checked = dashboardSelectedIds.has(l.id) ? 'checked' : '';
+    const stageBadge = l.pipeline_stage && l.pipeline_stage !== 'new'
+      ? `<span class="badge badge-${esc(l.pipeline_stage)}">${esc(l.pipeline_stage)}</span>`
+      : '';
+    return `
+      <div class="card lead-card dashboard-lead-card" data-dashboard-id="${esc(String(l.id))}">
+        <input type="checkbox" class="dashboard-lead-check" data-id="${esc(String(l.id))}" ${checked}>
+        <div class="lead-avatar">${esc(initials)}</div>
+        <div class="lead-info">
+          <div class="lead-name">${esc(l.full_name || 'Unknown')} ${stageBadge}</div>
+          <div class="lead-detail">${esc(l.job_title || '')}${l.company_name ? ' @ ' + esc(l.company_name) : ''}</div>
+          ${l.industry ? `<div class="lead-detail">${esc(l.industry)}</div>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  list.querySelectorAll('.dashboard-lead-check').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const id = e.target.dataset.id;
+      if (e.target.checked) {
+        dashboardSelectedIds.add(id);
+      } else {
+        dashboardSelectedIds.delete(id);
+      }
+      updateDashboardImportBar();
+    });
+  });
+
+  updateDashboardImportBar();
+}
+
+function updateDashboardImportBar() {
+  const bar = $('#dashboard-import-bar');
+  const countSpan = $('#dashboard-selected-count');
+  if (!bar) return;
+
+  if (dashboardSelectedIds.size > 0) {
+    bar.classList.remove('hidden');
+    if (countSpan) countSpan.textContent = `${dashboardSelectedIds.size} selected`;
+    const sel = $('#dashboard-campaign-select');
+    if (sel) {
+      sel.innerHTML = state.campaigns.map(c =>
+        `<option value="${esc(c.id)}">${esc(c.name)}</option>`
+      ).join('');
+    }
+  } else {
+    bar.classList.add('hidden');
+  }
+}
+
+function dashboardLeadToExtensionLead(dbLead, campaignId) {
+  return {
+    id: 'lead_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+    dashboardLeadId: dbLead.id,
+    campaignId,
+    name: dbLead.full_name || '',
+    firstName: dbLead.first_name || '',
+    lastName: dbLead.last_name || '',
+    company: dbLead.company_name || '',
+    title: dbLead.job_title || '',
+    linkedinUrl: dbLead.linkedin || '',
+    status: 'pending',
+    created: new Date().toISOString(),
+    needsEnrichment: !dbLead.linkedin && !dbLead.personal_research,
+    dashboardData: {
+      personal_research: dbLead.personal_research,
+      personalized_message: dbLead.personalized_message,
+      company_weakness: dbLead.company_weakness,
+      company_description: dbLead.company_description,
+      industry: dbLead.industry,
+      headline: dbLead.headline,
+    },
+  };
+}
+
+function importDashboardLeads() {
+  const campaignId = $('#dashboard-campaign-select')?.value;
+  if (!campaignId) {
+    showToast('Please select a campaign first');
+    return;
+  }
+
+  const selectedLeads = dashboardLeads.filter(l => dashboardSelectedIds.has(l.id));
+  if (selectedLeads.length === 0) return;
+
+  const totalAfterImport = state.leads.length + selectedLeads.length;
+  if (totalAfterImport > LEAD_HARD_CAP) {
+    showToast(`Import blocked: would reach ${totalAfterImport} leads (max ${LEAD_HARD_CAP})`);
+    return;
+  }
+  if (totalAfterImport > LEAD_SOFT_CAP) {
+    showToast(`Warning: ${totalAfterImport} leads may slow reply detection`, 'warning');
+  }
+
+  const newLeads = selectedLeads.map(l => dashboardLeadToExtensionLead(l, campaignId));
+  state.leads.push(...newLeads);
+  saveState();
+  renderLeads();
+  renderCampaigns();
+  updateStatusBar();
+
+  dashboardSelectedIds.clear();
+  renderDashboardLeads();
+
+  const leadsToEnrich = newLeads.filter(l => l.needsEnrichment);
+  if (leadsToEnrich.length > 0) {
+    chrome.runtime.sendMessage({
+      action: 'enrich_leads',
+      data: { leadIds: leadsToEnrich.map(l => l.id) }
+    });
+  }
+
+  showToast(`${selectedLeads.length} leads imported to campaign`, 'success');
 }
 
 // ---- Listen for background messages ----

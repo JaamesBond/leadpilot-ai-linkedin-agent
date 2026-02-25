@@ -13,7 +13,9 @@
   ],
   "host_permissions": [
     "https://www.linkedin.com/*",
-    "https://api.anthropic.com/*"
+    "https://api.anthropic.com/*",
+    "https://staging-api.getaivora.co/*",
+    "https://kvlfpwzmjxuapjheknnj.supabase.co/*"
   ],
   "action": {
     "default_popup": "src/popup.html",

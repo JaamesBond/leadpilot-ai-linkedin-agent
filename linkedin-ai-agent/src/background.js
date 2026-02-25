@@ -1,3 +1,6 @@
+import { getAuthHeaders } from './auth.js';
+import { AIVORA_CONFIG } from './config.js';
+
 // ============================================================
 // LeadPilot AI — Background Service Worker
 // Orchestrates campaign execution, AI conversations, scheduling
@@ -354,6 +357,35 @@ function personalizeTemplate(template, lead) {
     .replace(/\{\{title\}\}/gi, lead.title || 'your role');
 }
 
+// ---- Dashboard Status Sync (fire-and-forget) ----
+async function syncStatusToDashboard(lead) {
+  if (!lead.dashboardLeadId) return;
+  try {
+    const headers = await getAuthHeaders();
+    if (!headers) return;
+    const stageMap = {
+      messaged: 'contacted',
+      replied: 'replied',
+      qualified: 'qualified',
+      disqualified: 'disqualified',
+      abandoned: 'abandoned',
+      call_booked: 'call_booked',
+    };
+    const pipeline_stage = stageMap[lead.status];
+    if (!pipeline_stage) return;
+    await fetch(`${AIVORA_CONFIG.BACKEND_URL}/api/content/linkedin-leads/${lead.dashboardLeadId}/status`, {
+      method: 'PATCH',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pipeline_stage,
+        last_contacted_at: lead.lastMessageAt || new Date().toISOString(),
+      }),
+    });
+  } catch (err) {
+    console.warn('[LeadPilot] Dashboard sync failed (non-blocking):', err.message);
+  }
+}
+
 // ---- Send Message via Content Script ----
 async function sendMessage(lead, campaign, message) {
   const state = await getState();
@@ -394,6 +426,8 @@ async function sendMessage(lead, campaign, message) {
 
       freshLead.status = 'send_failed';
       freshLead.lastError = result?.error || 'Message delivery failed';
+      freshLead.failedAt = Date.now();
+      freshLead.retryCount = (freshLead.retryCount || 0);
       await setState({ leads: freshState.leads });
       return { success: false, error: result?.error };
     }
@@ -439,6 +473,7 @@ async function sendMessage(lead, campaign, message) {
 
     console.log(`[LeadPilot] ✓ Message sent to ${lead.name}`);
     await addLog('message_sent', `Message sent to ${lead.name}`, { leadId: lead.id });
+    syncStatusToDashboard(freshLead);
     return { success: true };
 
   } catch (err) {
@@ -450,6 +485,8 @@ async function sendMessage(lead, campaign, message) {
     if (errLead) {
       errLead.status = 'send_failed';
       errLead.lastError = err.message;
+      errLead.failedAt = Date.now();
+      errLead.retryCount = (errLead.retryCount || 0);
       await setState({ leads: errState.leads });
     }
     return { success: false, error: err.message };
@@ -507,6 +544,7 @@ async function handleRejectedMessage(data) {
       lead.status = 'pending';
     }
     await setState({ leads: state.leads });
+    if (data.action === 'disqualify') syncStatusToDashboard(lead);
   }
 }
 
@@ -739,6 +777,29 @@ async function generateAIResponse(conv, lead, campaign, state, ephemeralUserMsg 
       conv.status = 'replied';
       await setState({ conversations: state.conversations });
       return;
+    }
+
+    // Duplicate message detection: check if AI response is too similar to recent messages
+    const recentAssistantMsgs = conv.messages
+      .filter(m => m.role === 'assistant' && !m.isSystem)
+      .slice(-3)
+      .map(m => m.text);
+    const isDuplicate = recentAssistantMsgs.some(prev => messageSimilarity(cleanMsg, prev) > 0.8);
+
+    if (isDuplicate && !conv._duplicateRetried) {
+      conv._duplicateRetried = true;
+      await setState({ conversations: state.conversations });
+      await addLog('duplicate_detected', `AI draft too similar to previous message for ${lead.name}, retrying...`, { leadId: lead.id });
+      // Retry once with explicit instruction to say something different
+      const dedupEphemeral = ephemeralUserMsg
+        ? ephemeralUserMsg + '\n\nIMPORTANT: Your previous draft was too similar to a message you already sent. Say something substantially different — different angle, different words, different structure.'
+        : 'IMPORTANT: Your previous draft was too similar to a message you already sent. Say something substantially different — different angle, different words, different structure.';
+      await generateAIResponse(conv, lead, campaign, state, dedupEphemeral);
+      return;
+    }
+    // Clear the retry flag after successful non-duplicate (or after retry exhausted)
+    if (conv._duplicateRetried) {
+      delete conv._duplicateRetried;
     }
 
     await addLog('ai_ready', `AI response for ${lead.name}: "${cleanMsg.slice(0, 80)}..."`, { leadId: lead.id });
@@ -1097,6 +1158,20 @@ LEAD CONTEXT
 
 
 
+  // Dashboard enrichment data (from Aivora backend)
+  if (lead.dashboardData) {
+    const dd = lead.dashboardData;
+    if (dd.personal_research) {
+      dynamicText += `\n\n═══════════════════════════════════════\nRESEARCH ABOUT THIS PERSON\n═══════════════════════════════════════\n${dd.personal_research}`;
+    }
+    if (dd.company_weakness) {
+      dynamicText += `\n\n═══════════════════════════════════════\nCOMPANY WEAKNESSES\n═══════════════════════════════════════\n${dd.company_weakness}`;
+    }
+    if (dd.company_description) {
+      dynamicText += `\n\nCompany background: ${dd.company_description}`;
+    }
+  }
+
   if (insights.length > 0) {
     dynamicText += `\n- What you've learned so far: ${insights.map(i => `${i.key}: ${i.value}`).join(', ')}`;
   }
@@ -1207,6 +1282,7 @@ async function sendFollowUp(conv, lead, campaign, message, qualification, tags =
     });
 
     await addLog('message_sent', `Reply sent to ${lead.name}`, { leadId: lead.id });
+    syncStatusToDashboard(lead);
 
   } catch (err) {
     console.error('[LeadPilot] Follow-up send failed:', err);
@@ -1225,7 +1301,35 @@ async function processFollowUps(state) {
 
     const campaign = state.campaigns.find(c => c.id === conv.campaignId);
     if (!campaign || campaign.status !== 'active') continue;
-    if (conv.followupCount >= campaign.maxFollowups) continue;
+    if (conv.followupCount >= campaign.maxFollowups) {
+      // Transition to abandoned if enough time has elapsed since last assistant message
+      const lastAssistantMsg = [...conv.messages].reverse().find(m => m.role === 'assistant');
+      if (lastAssistantMsg) {
+        const hoursSinceLastMsg = (now - new Date(lastAssistantMsg.timestamp).getTime()) / 3600000;
+        const followupDelay = Math.max(campaign.followupDelay || 24, 1);
+        if (hoursSinceLastMsg >= followupDelay) {
+          // Re-fetch fresh state before mutation
+          const freshState = await getState();
+          const freshConv = freshState.conversations.find(c => c.id === conv.id);
+          const freshLead = freshState.leads.find(l => l.id === conv.leadId);
+          const freshCampaign = freshState.campaigns.find(c => c.id === conv.campaignId);
+          if (freshConv && freshConv.status === 'awaiting_reply' && freshLead) {
+            freshConv.status = 'abandoned';
+            freshLead.status = 'abandoned';
+            if (!freshCampaign.stats.abandoned) freshCampaign.stats.abandoned = 0;
+            freshCampaign.stats.abandoned++;
+            await setState({
+              conversations: freshState.conversations,
+              leads: freshState.leads,
+              campaigns: freshState.campaigns,
+            });
+            syncStatusToDashboard(freshLead);
+            await addLog('abandoned', `Max follow-ups reached for ${freshLead.name} with no reply — marking abandoned`, { leadId: freshLead.id });
+          }
+        }
+      }
+      continue;
+    }
 
     const lastMsg = conv.messages[conv.messages.length - 1];
     if (!lastMsg || lastMsg.role !== 'assistant') continue;
@@ -1252,7 +1356,22 @@ async function processFollowUps(state) {
     await setState({ conversations: freshState.conversations });
 
     // FIX 2: Pass follow-up context as ephemeral message (not stored in conv.messages)
-    const ephemeralFollowUpMsg = `The lead hasn't replied in ${Math.round(hoursSince)} hours. Send a brief, friendly follow-up. This is follow-up #${freshConv.followupCount + 1} of max ${freshCampaign.maxFollowups}.`;
+    const followupNum = freshConv.followupCount + 1;
+    const isLastFollowup = followupNum >= freshCampaign.maxFollowups;
+    let ephemeralFollowUpMsg = `The lead has NOT replied to any of your messages. ${Math.round(hoursSince)} hours since your last message.
+Follow-up #${followupNum} of max ${freshCampaign.maxFollowups}.
+
+CRITICAL OVERRIDE — this is a FOLLOW-UP TO SILENCE, not a reply:
+- Do NOT propose a call to someone who has not replied.
+- Ignore stage guidance that says "book the call" — that applies to active conversations only.
+- Send a brief value-add nudge. Reference something specific about them or their business. 1-2 sentences max.`;
+    if (isLastFollowup) {
+      ephemeralFollowUpMsg += `
+
+THIS IS YOUR FINAL FOLLOW-UP. Gracefully close:
+"If the timing isn't right, no worries — my door's open if things change."
+Do NOT guilt-trip. Keep it light and genuine.`;
+    }
 
     // FIX 12: Enqueue to prevent burst rate-limit hits
     await enqueueAICall(() => generateAIResponse(freshConv, freshLead, freshCampaign, freshState, ephemeralFollowUpMsg));
@@ -1302,6 +1421,28 @@ async function checkForReplies() {
     }
   }
   if (leadStaleFixed) {
+    await setState({ leads: state.leads });
+  }
+
+  // Auto-retry send_failed leads after 5 minutes (max 3 retries)
+  let sendFailedFixed = false;
+  for (const lead of state.leads) {
+    if (lead.status === 'send_failed' && lead.failedAt) {
+      const retryCount = lead.retryCount || 0;
+      if (retryCount >= 3) continue; // Permanent failure after 3 retries
+      const msSinceFail = Date.now() - lead.failedAt;
+      if (msSinceFail > 5 * 60 * 1000) { // 5 minutes
+        console.log(`[LeadPilot] Auto-retrying send_failed lead ${lead.name} (retry ${retryCount + 1}/3)`);
+        await addLog('auto_retry', `Retrying send for ${lead.name} (attempt ${retryCount + 1}/3)`, { leadId: lead.id });
+        lead.status = 'pending';
+        lead.retryCount = retryCount + 1;
+        lead.failedAt = null;
+        lead.lastError = null;
+        sendFailedFixed = true;
+      }
+    }
+  }
+  if (sendFailedFixed) {
     await setState({ leads: state.leads });
   }
 
@@ -1377,6 +1518,12 @@ async function enrichLeads(leadIds) {
   const tabId = tabs[0].id;
 
   for (const lead of leadsToEnrich) {
+    // Skip enrichment for leads imported from Aivora dashboard
+    if (lead.dashboardData && (lead.dashboardData.personal_research || lead.linkedinUrl)) {
+      lead.needsEnrichment = false;
+      continue;
+    }
+
     if (!lead.linkedinUrl) {
       lead.needsEnrichment = false;
       continue;
@@ -1471,6 +1618,19 @@ function cleanLinkedInSlug(url) {
     .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(' ')
     .trim();
+}
+
+// ---- Duplicate Message Detection (Jaccard word similarity) ----
+function messageSimilarity(msgA, msgB) {
+  if (!msgA || !msgB) return 0;
+  const normalize = s => s.toLowerCase().replace(/[^\w\s]/g, '').trim();
+  const wordsA = new Set(normalize(msgA).split(/\s+/).filter(w => w.length > 2));
+  const wordsB = new Set(normalize(msgB).split(/\s+/).filter(w => w.length > 2));
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+  let overlap = 0;
+  for (const word of wordsA) if (wordsB.has(word)) overlap++;
+  const union = new Set([...wordsA, ...wordsB]).size;
+  return union === 0 ? 0 : overlap / union;
 }
 
 function sleep(ms) {
